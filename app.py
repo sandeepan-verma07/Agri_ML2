@@ -6,6 +6,7 @@ import os
 import math
 import requests
 import random
+import base64
 from datetime import date as dt_date
 from datetime import datetime
 import google.generativeai as genai
@@ -26,6 +27,14 @@ st.set_page_config(
 # --- Load API Keys ---
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# --- HELPER FUNCTION TO ENCODE LOCAL IMAGE ---
+@st.cache_data
+def get_img_as_base64(file):
+    with open(file, "rb") as f:
+        data = f.read()
+    return base64.b64encode(data).decode()
+
 
 # --- Keras Model Definition (Required for loading the model) ---
 def create_model(n_features_in, optimizer='adam', dropout_rate=0.2, hidden_layer_sizes=(64, 32)):
@@ -64,6 +73,12 @@ def load_data(path):
         st.error(f"Dataset not found at {path}.")
         return None
 
+# Add timedelta to your imports at the top of the file
+from datetime import date as dt_date, timedelta
+
+# Make sure this import is at the top of your app.py
+from datetime import date as dt_date, timedelta
+
 # --- Helper Functions ---
 STATE_COORDINATES = {
     "Odisha": (20.9517, 85.0985)
@@ -75,16 +90,26 @@ def fetch_rainfall_from_api(state: str, year: int):
         st.sidebar.error(f"Coordinates for '{state}' not found.")
         return np.nan
     lat, lon = STATE_COORDINATES[state]
+
+    # --- FIX: Reverted to always using the more reliable archive API ---
+    base_url = "https://archive-api.open-meteo.com/v1/archive"
+    
     start_date_str = f"{year}-01-01"
-    end_date_str = f"{year}-12-31"
+    end_date_str = f"{year}-12-31"  # Default to the full year
+    
     current_year = dt_date.today().year
+
     if year == current_year:
-        end_date_str = dt_date.today().isoformat()
+        # For the current year, data is only available up to yesterday.
+        yesterday = dt_date.today() - timedelta(days=1)
+        end_date_str = yesterday.isoformat()
     elif year > current_year:
         st.sidebar.error("Cannot fetch rainfall data for a future year.")
         return np.nan
+    # --- END OF FIX ---
+        
     url = (
-        f"https://archive-api.open-meteo.com/v1/archive"
+        f"{base_url}"
         f"?latitude={lat}&longitude={lon}"
         f"&start_date={start_date_str}&end_date={end_date_str}"
         f"&daily=precipitation_sum&timezone=Asia/Kolkata"
@@ -93,6 +118,12 @@ def fetch_rainfall_from_api(state: str, year: int):
         response = requests.get(url, timeout=15)
         response.raise_for_status()
         data = response.json()
+        
+        # Check if the API returned an error in the JSON response
+        if data.get("error"):
+            st.sidebar.error(f"API Error: {data.get('reason', 'Unknown error')}")
+            return np.nan
+            
         if "daily" in data and "precipitation_sum" in data["daily"]:
             daily_rainfall = data["daily"]["precipitation_sum"]
             total_rainfall = sum(precip for precip in daily_rainfall if precip is not None)
@@ -100,8 +131,17 @@ def fetch_rainfall_from_api(state: str, year: int):
         else:
             st.sidebar.warning(f"Rainfall data not available for {state}, {year}.")
             return np.nan
+            
     except requests.exceptions.RequestException as e:
-        st.sidebar.error(f"Network error fetching data: {e}")
+        error_message = f"Network error fetching data: {e}"
+        if e.response is not None:
+            # Try to parse the JSON error from the response
+            try:
+                error_data = e.response.json()
+                error_message += f" - API says: {error_data.get('reason')}"
+            except ValueError:
+                error_message += f" - Server response: {e.response.text}"
+        st.sidebar.error(error_message)
         return np.nan
 
 @st.cache_data
@@ -150,6 +190,7 @@ def save_guest_data(profile_data):
 # --- Functions for Page Rendering ---
 
 def set_bg_image(image_url):
+    # This is for the cover page
     st.markdown(
         f"""
         <style>
@@ -163,86 +204,100 @@ def set_bg_image(image_url):
         unsafe_allow_html=True
     )
 
-# --- NEW: Function for animated login page background ---
-def set_login_bg():
-    st.markdown(
-        f"""
-        <style>
-        .stApp {{
-            background-image: url("https://i.pinimg.com/originals/b7/65/9d/b7659d95086e4a29a3416e7886a113b2.gif");
-            background-size: cover;
-            background-position: center;
-        }}
-        /* Style for the semi-transparent container */
-        div[data-testid="stVerticalBlock"] > [style*="flex-direction: column;"] > [data-testid="stVerticalBlock"] {{
-            background-color: rgba(0, 0, 0, 0.6);
-            padding: 2rem;
-            border-radius: 10px;
-            color: white;
-        }}
-        /* Make text white for readability */
-        div[data-testid="stVerticalBlock"] > [style*="flex-direction: column;"] > [data-testid="stVerticalBlock"] h1,
-        div[data-testid="stVerticalBlock"] > [style*="flex-direction: column;"] > [data-testid="stVerticalBlock"] p,
-        div[data-testid="stVerticalBlock"] > [style*="flex-direction: column;"] > [data-testid="stVerticalBlock"] label {{
-            color: white;
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-
 def navigate_to_page(page_name):
     st.session_state.page = page_name
 
 def render_login_page():
-    """Renders the login page with an animated background."""
-    set_login_bg()
+    """Renders the login page with a local background and a styled card."""
     
-    col1, col2, col3 = st.columns([1, 1.2, 1])
-    with col2:
-        # Using st.container() to group elements for styling
-        with st.container():
-            st.title("🌾 Welcome to Crop Sense")
-            st.markdown("Please log in or continue as a guest to get started.")
+    img_path = "assets/login_background.jpg"
 
-            with st.form("login_form"):
-                st.markdown("Enter Phone Number")
-                c1, c2 = st.columns([0.3, 0.7])
-                with c1:
-                    st.text_input("Country Code", value="+91", disabled=True, label_visibility="collapsed")
-                with c2:
-                    st.text_input(
-                        "Mobile Number",
-                        placeholder="9876543210",
-                        key="phone_number",
-                        max_chars=10,
-                        label_visibility="collapsed"
-                    )
+    try:
+        img = get_img_as_base64(img_path)
+        page_bg_css = f"""
+        <style>
+        /* --- Set the background image for the entire app --- */
+        .stApp {{
+            background-image: url("data:image/jpeg;base64,{img}");
+            background-size: cover;
+            background-position: center center;
+            background-attachment: fixed;
+        }}
 
-                send_otp_button = st.form_submit_button("Send OTP")
-                if send_otp_button:
-                    otp = random.randint(100000, 999999)
-                    st.session_state.correct_otp = otp
-                    st.session_state.otp_sent = True
-                    st.success(f"📬 Mock OTP Sent! Your OTP is: **{otp}**")
-                
-                if st.session_state.get('otp_sent', False):
-                    user_otp = st.text_input("Enter OTP", placeholder="Enter 6-digit OTP")
-                    login_button = st.form_submit_button("Login")
-                    if login_button:
-                        if user_otp == str(st.session_state.get('correct_otp', '')):
-                            st.session_state.logged_in = True
-                            st.session_state.page = "cover"
-                            st.rerun()
-                        else:
-                            st.error("Invalid OTP. Please try again.")
+        /* --- Style the container for the central login column --- */
+        /* This targets the specific div that Streamlit creates for the central column */
+        div[data-testid="stHorizontalBlock"] > div:nth-of-type(2) > div[data-testid="stVerticalBlock"] {{
+            background-color: rgba(0, 0, 0, 0.75);
+            padding: 1rem;
+            border-radius: 15px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }}
+
+        /* --- Ensure all text inside the central column is white and readable --- */
+        div[data-testid="stHorizontalBlock"] > div:nth-of-type(2) > div[data-testid="stVerticalBlock"] * {{
+            color: white;
+        }}
+
+        /* --- Specific styling for elements --- */
+        div[data-testid="stHorizontalBlock"] > div:nth-of-type(2) > div[data-testid="stVerticalBlock"] h1 {{
+            text-align: center;
+        }}
+        
+        div[data-testid="stHorizontalBlock"] > div:nth-of-type(2) > div[data-testid="stVerticalBlock"] p {{
+            text-align: center;
+            font-size: 1.1rem;
+        }}
+        </style>
+        """
+        st.markdown(page_bg_css, unsafe_allow_html=True)
+    except FileNotFoundError:
+        st.error(f"Background image not found. Make sure you have a file at: {img_path}")
+
+    # Create a layout with a central column for the login card
+    _, login_col, _ = st.columns([1, 1.3, 1])
+
+    with login_col:
+        st.title("🌾 Welcome to Crop Sense")
+        st.markdown("Please log in or continue as a guest to get started.")
+
+        with st.form("login_form"):
+            st.markdown("Enter Phone Number")
+            c1, c2 = st.columns([0.3, 0.7])
+            with c1:
+                st.text_input("Country Code", value="+91", disabled=True, label_visibility="collapsed")
+            with c2:
+                st.text_input(
+                    "Mobile Number",
+                    placeholder="9876543210",
+                    key="phone_number",
+                    max_chars=10,
+                    label_visibility="collapsed"
+                )
+
+            send_otp_button = st.form_submit_button("Send OTP")
+            if send_otp_button:
+                otp = random.randint(100000, 999999)
+                st.session_state.correct_otp = otp
+                st.session_state.otp_sent = True
+                st.success(f"📬 Mock OTP Sent! Your OTP is: **{otp}**")
             
-            st.divider()
-            
-            if st.button("Continue without Login", use_container_width=True):
-                st.session_state.logged_in = False
-                navigate_to_page("cover")
-                st.rerun()
+            if st.session_state.get('otp_sent', False):
+                user_otp = st.text_input("Enter OTP", placeholder="Enter 6-digit OTP")
+                login_button = st.form_submit_button("Login")
+                if login_button:
+                    if user_otp == str(st.session_state.get('correct_otp', '')):
+                        st.session_state.logged_in = True
+                        st.session_state.page = "cover"
+                        st.rerun()
+                    else:
+                        st.error("Invalid OTP. Please try again.")
+        
+        st.divider()
+        
+        if st.button("Continue without Login", use_container_width=True):
+            st.session_state.logged_in = False
+            navigate_to_page("cover")
+            st.rerun()
 
 def render_cover_page():
     image_url = "https://images.unsplash.com/photo-1560493676-04071c5f467b?q=80&w=1974&auto=format&fit=crop"
@@ -270,10 +325,8 @@ def render_cover_page():
 
 def render_main_app(df, model_pipeline):
     st.title("🌾 Crop Yield Prediction and Advisory System")
-    st.markdown("Enter the details of your farm to get a yield prediction and tailored recommendations.\nଅମଳ ପୂର୍ବାନୁମାନ ଏବ... (rest of your function remains the same)")
+    st.markdown("Enter the details of your farm to get a yield prediction and tailored recommendations.\nଅମଳ ପୂର୍ବାନୁମାନ ଏବଂ ଉପଯୁକ୍ତ ସୁପାରିଶ ପାଇବା ପାଇଁ ଆପଣଙ୍କ ଫାର୍ମର ବିବରଣୀ ପ୍ରବେଶ କରନ୍ତୁ।")
     
-    # --- ALL THE CODE FROM YOUR render_main_app FUNCTION GOES HERE ---
-    # --- I've omitted it for brevity, but you should paste your original code back in ---
     crop_options = sorted(df['Crop'].unique())
     state_options = sorted(df['State'].unique())
     season_options = sorted(df['Season'].unique())
