@@ -93,5 +93,3 @@ To run this project on your local machine, follow these simple steps.
     The application should now be running in your web browser!
 
 ---
-
-## 📂 Project Structure
